@@ -406,7 +406,7 @@ func main() {
 		fmt.Println("Usage  :")
 		fmt.Println("  pmpcli <login_url> <user> <pass> <org> <system> <account> <ticket> <reason>")
 		fmt.Println("Example:")
-		fmt.Println("  pmpcli https://127.0.0.1:7272 user pass org1 serv root i1234 check")
+		fmt.Println("  pmpcli https://127.0.0.1:7272 user pass org1 serv root inc1234 check")
 		return
 	}
 	rawurl := os.Args[1]
