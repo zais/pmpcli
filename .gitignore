@@ -22,6 +22,7 @@ _testmain.go
 *.exe
 *.test
 *.prof
+debug
 
 # seafile
 saefile-ignore.txt

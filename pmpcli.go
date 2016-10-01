@@ -40,8 +40,8 @@ type PMPEntry struct {
 	password string
 }
 
-// String conveerts it to string
-func (e *PMPEntry) String() (str string) {
+// String converts it to string
+func (e PMPEntry) String() (str string) {
 	return e.user + "@" + e.system + " / " + strings.Repeat("*", utf8.RuneCountInString(e.password))
 }
 
