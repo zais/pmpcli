@@ -31,6 +31,7 @@ type PMPClient struct {
 	User     string
 	Domain   string
 	Org      string
+	//TODO: logger as dependency/part of struct/constructor
 }
 
 // PMPEntry holds user/password for system
@@ -63,7 +64,9 @@ func NewPMPClient(LoginURL string, secure bool) (pc *PMPClient, err error) {
 func (pc *PMPClient) SetUserDomain() (err error) {
 	// get userdomain
 	u := pc.BaseURL + "/login/AjaxResponse.jsp?RequestType=GetUserDomainName&userName=" + pc.User
-	log.Println("Request:", u)
+	if VERBOSE {
+		log.Println("Request:", u)
+	}
 	body, status, err := pc.Get(u)
 	if err != nil {
 		log.Fatalln(err)
@@ -104,7 +107,9 @@ func (pc *PMPClient) Login(user string, password string) (success bool, err erro
 	// submit login form
 	jsessionid := pc.GetCookie(pc.BaseURL, "JSESSIONID")
 	u := pc.BaseURL + "/j_security_check;jsessionid=" + jsessionid
-	log.Println("Request:", u)
+	if VERBOSE {
+		log.Println("Request:", u)
+	}
 	vals := url.Values{
 		"BROWSER_NAME":  {"FF"},
 		"ORGN_NAME":     {pc.Org},
@@ -134,7 +139,9 @@ func (pc *PMPClient) LogOut() (err error) {
 	pmpcc := pc.GetCookie(pc.BaseURL, "pmpcc")
 	// submit login form
 	u := pc.BaseURL + "/jsp/xmlhttp/AjaxResponse.jsp"
-	log.Println("Request:", u)
+	if VERBOSE {
+		log.Println("Request:", u)
+	}
 	_, status, err := pc.PostForm(u, url.Values{
 		"RequestType": {"InvalidateSession"},
 		"pmpcp":       {pmpcc},
@@ -152,7 +159,9 @@ func (pc *PMPClient) LogOut() (err error) {
 func (pc *PMPClient) GetOrgs() (orgs map[string]string, err error) {
 	// get ORGs
 	u := pc.BaseURL + "/ajaxservlet/AjaxServlet?action=searchOrganization"
-	log.Println("Request:", u)
+	if VERBOSE {
+		log.Println("Request:", u)
+	}
 	resp, status, err := pc.Get(u)
 	if err != nil {
 		log.Fatalln(err)
@@ -203,7 +212,9 @@ func (pc *PMPClient) ChangeOrg(org string) (err error) {
 	pmpcc := pc.GetCookie(pc.BaseURL, "pmpcc")
 	// change ORG
 	u := pc.BaseURL + "/jsp/xmlhttp/OrgAjaxResponse.jsp?RequestType=organizationChange&SUBREQUEST=XMLHTTP"
-	log.Println("Request:", u)
+	if VERBOSE {
+		log.Println("Request:", u)
+	}
 	body, status, err := pc.PostForm(u, url.Values{
 		"ORGID": {orgID},
 		"pmpcp": {pmpcc},
@@ -223,7 +234,9 @@ func (pc *PMPClient) GetPassword(entry *PMPEntry, reason string, addreason strin
 	pmpcc := pc.GetCookie(pc.BaseURL, "pmpcc")
 	// query password
 	u := pc.BaseURL + "/jsp/xmlhttp/PasswdRetriveAjaxResponse.jsp?RequestType=PasswordRetrived"
-	log.Println("Request:", u)
+	if VERBOSE {
+		log.Println("Request:", u)
+	}
 	resp, status, err := pc.PostForm(u, url.Values{
 		"resource":  {entry.system},
 		"account":   {entry.user},
@@ -379,14 +392,6 @@ func htmlElementValByID(htmlStr string, name string) (str string, err error) {
 	return
 }
 
-func htmlElementUsage() {
-	str := `<input type="hidden" name="AUTHRULE_NAME" id="AUTHRULE_NAME" value="ADAuthenticator">
-      <input type="hidden" id="ORGN_NAME" name="ORGN_NAME" value="org1">`
-	val, _ := htmlElementValByID(str, "ORGN_NAME")
-	val = html.UnescapeString(val)
-	fmt.Println(val)
-}
-
 // -----------------------------------------------------------------------------
 // Main
 // -----------------------------------------------------------------------------
@@ -394,15 +399,21 @@ func htmlElementUsage() {
 // DEBUG is debug
 const DEBUG = false
 
+// VERBOSE output
+const VERBOSE = false
+
+// BUILD number
+const BUILD ="201610081018"
+
 // VERSION of this piece of ***
-const VERSION = "0.1.20160930a"
+const VERSION = "0.1.0." + BUILD
 
 // VERSIONAPI engine/plugin versions
 const VERSIONAPI = "engine: 8.5.0.8502 / plugin: 1.0.2.4"
 
 func main() {
 	if len(os.Args) != 9 {
-		fmt.Println("Version:", VERSION, "for (", VERSIONAPI, ")")
+		fmt.Println("Version:", VERSION, "( for", VERSIONAPI, ")")
 		fmt.Println("Usage  :")
 		fmt.Println("  pmpcli <login_url> <user> <pass> <org> <system> <account> <ticket> <reason>")
 		fmt.Println("Example:")
@@ -416,7 +427,7 @@ func main() {
 	system := os.Args[5]
 	account := os.Args[6]
 	ticket := os.Args[7]
-	readon := os.Args[8]
+	reason := os.Args[8]
 
 	pc, err := NewPMPClient(rawurl, false)
 	if err != nil {
@@ -430,10 +441,11 @@ func main() {
 		log.Fatalln(err)
 	}
 	entry := &PMPEntry{system: system, user: account}
-	pc.GetPassword(entry, ticket, readon)
+	if err = pc.GetPassword(entry, ticket, reason); err != nil {
+		log.Fatalln(err)
+	}
 	fmt.Println(entry.user + " @ " + entry.system + " / " + entry.password)
-	pc.LogOut()
-	if err != nil || !success {
+	if pc.LogOut(); err != nil {
 		log.Fatalln(err)
 	}
 }
