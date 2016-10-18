@@ -25,10 +25,10 @@ import (
 // -----------------------------------------------------------------------------
 
 // BUILD number
-const BUILD ="201610090952"
+const BUILD = "201610181947"
 
 // VERSION of this piece of ***
-const VERSION = "0.1.0." + BUILD
+const VERSION = "0.1.2." + BUILD
 
 // VERSIONAPI engine/plugin versions
 const VERSIONAPI = "engine: 8.5.0.8502 / plugin: 1.0.2.4"
@@ -94,7 +94,6 @@ type PMPClient struct {
 	Domain   string
 	Org      string
 	mode     PMPMode
-	//TODO: logger as dependency/part of struct/constructor
 }
 
 // PMPConfig holds values for PMPClient constructor
@@ -196,6 +195,11 @@ func (pc *PMPClient) Login(user string, password string) (success bool, err erro
 		if err = pc.SetUserDomain(); err != nil {
 			log.Fatalln(err)
 		}
+	}
+
+	// set domain for AD auth
+	if auth != "" && pc.Domain != "" {
+		pc.User = pc.Domain + "\\" + pc.User
 	}
 
 	// submit login form
