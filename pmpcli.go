@@ -27,12 +27,13 @@ import (
 // -----------------------------------------------------------------------------
 
 // BUILD number
+const BUILD ="201611251019"
 
 // VERSION of this piece of ***
-const VERSION = "0.2.0." + BUILD
+const VERSION = "0.2.1." + BUILD
 
 // VERSIONAPI engine/plugin versions
-const VERSIONAPI = "engine: 8.5.0.8502 / plugin: 1.0.2.4"
+const VERSIONAPI = "engine: 8.6.0.8600 / plugin: 1.0.2.4"
 
 // -----------------------------------------------------------------------------
 // Log level
@@ -184,6 +185,8 @@ type PMPConfig struct {
 	Account    string
 	Ticket     string
 	Reason     string
+	Mode       PMPMode
+	Stdout     *os.File
 	SetEnv     bool
 	IgnoreCert bool
 	Verbose    bool
@@ -217,19 +220,24 @@ func NewPMPClient(cfg PMPConfig) (pc *PMPClient, err error) {
 		log.Fatalln(err)
 	}
 	baseURL := u.Scheme + "://" + u.Host
+	// check mode, set default if needed
+	mode := cfg.Mode
+	if mode != PMPModeBrowser && mode != PMPModePlugin {
+		mode = PMPModePlugin
+	}
 	return &PMPClient{
 		TinyClient: tc,
 		LoginURL:   cfg.LoginURL,
 		BaseURL:    baseURL,
 		Domain:     cfg.Domain,
 		Org:        cfg.Org,
-		Mode:       PMPModePlugin,
+		Mode:       mode,
 	}, err
 }
 
 // DoPluginRest do post against rest endpoint and returns unmarshaled json
 // TODO: do 'status' check inside; add boolean out param
-func (pc *PMPClient) DoPluginRest(u string, method string) (res PMPAPIResult, err error) {
+func (pc *PMPClient) DoPluginRest(u string, method string) (res PMPAPIResult, success bool, err error) {
 	u = pc.BaseURL + u
 	var body string
 	var status int
@@ -246,6 +254,9 @@ func (pc *PMPClient) DoPluginRest(u string, method string) (res PMPAPIResult, er
 
 	err = json.Unmarshal([]byte(body), &res)
 	Debug("Response:", res)
+	if strings.ToUpper(res.Operation.Result.Status) == "SUCCESS" {
+		success = true
+	}
 	return
 }
 
@@ -279,11 +290,11 @@ func (pc *PMPClient) loginAPI(user string, password string) (success bool, err e
 	// 	log.Fatalln(err)
 	// }
 
-	res, err := pc.DoPluginRest("/api/json/request?OPERATION_NAME=GET_AUTHENTICATION_MODE", "POST")
+	res, success, err := pc.DoPluginRest("/api/json/request?OPERATION_NAME=GET_AUTHENTICATION_MODE", "POST")
 	if err != nil {
 		log.Fatalln("Unable to call GET_AUTHENTICATION_MODE:", err)
 	}
-	if res.Operation.Result.Status != "Success" {
+	if !success {
 		// Can't get auth info, trying to get org name from Web interface
 		Debug("[" + res.Operation.Name + "] " + res.Operation.Result.Status + ": " + res.Operation.Result.Message)
 		if pc.Domain == "" {
@@ -294,8 +305,8 @@ func (pc *PMPClient) loginAPI(user string, password string) (success bool, err e
 		pc.Header["orgName"] = pc.Domain
 
 		// try API again
-		res, err = pc.DoPluginRest("/api/json/request?OPERATION_NAME=GET_AUTHENTICATION_MODE", "POST")
-		if err != nil {
+		res, success, err = pc.DoPluginRest("/api/json/request?OPERATION_NAME=GET_AUTHENTICATION_MODE", "POST")
+		if err != nil || !success {
 			log.Fatalln("Unable to call GET_AUTHENTICATION_MODE with orgName set:", err)
 		}
 		delete(pc.Header, "orgName")
@@ -351,14 +362,14 @@ func (pc *PMPClient) loginAPI(user string, password string) (success bool, err e
 	// if err = json.Unmarshal([]byte(body), &res); err != nil {
 	// 	log.Fatalln(err)
 	// }
-	if res, err = pc.DoPluginRest(u, "POST"); err != nil {
+	if res, success, err = pc.DoPluginRest(u, "POST"); err != nil {
 		log.Fatalln(err)
 	}
-	if res.Operation.Result.Status == "Success" {
+	if success {
 		det = res.Operation.Details
 		pc.AuthKey = det.AuthKey
 		Debug("[" + res.Operation.Name + "] " + res.Operation.Result.Status + ": " + res.Operation.Result.Message)
-		Info("Hello " + det.Permissions.UserDetails.UserFullName + " (" + det.Permissions.UserDetails.UserEmailID + ")")
+		Info("Logged in as " + det.Permissions.UserDetails.UserFullName + " (" + det.Permissions.UserDetails.UserEmailID + ")")
 	} else {
 		log.Panic("[" + res.Operation.Name + "] " + res.Operation.Result.Status + ": " + res.Operation.Result.Message)
 	}
@@ -495,11 +506,11 @@ func (pc *PMPClient) logOutPlugin() (err error) {
 				`"RESOURCENAME":"N/A","ACCOUNTNAME":"N/A","OPERATIONTYPE":"User Logged out",` +
 				`"ORGID":"` + strconv.Itoa(pc.OrgID) + `" }]}}`},
 		}.Encode()
-	res, err := pc.DoPluginRest(u, "POST")
+	res, success, err := pc.DoPluginRest(u, "POST")
 	if err != nil {
 		log.Fatalln("Unable to logOut:", err)
 	}
-	if res.Operation.Result.Status != "Success" {
+	if !success {
 		Info("[" + res.Operation.Name + "] " + res.Operation.Result.Status + ": " + res.Operation.Result.Message)
 	}
 	return
@@ -590,30 +601,37 @@ func (pc *PMPClient) ChangeOrg(org string) (err error) {
 	return
 }
 
-// GetPassword changes org if it can
-func (pc *PMPClient) GetPassword(entry *PMPEntry, reason string, addreason string) (err error) {
+// GetPasswords changes org if it can
+func (pc *PMPClient) GetPasswords(system string, user string, reason string, addreason string) (res []PMPEntry, err error) {
 	switch pc.Mode {
 	case PMPModePlugin:
-		pc.getPasswordPlugin(entry, reason, addreason)
+		res, err = pc.getPasswordPlugin(system, user, reason, addreason)
 	case PMPModeBrowser:
-		pc.getPasswordBrowser(entry, reason, addreason)
+		res, err = pc.getPasswordBrowser(system, user, reason, addreason)
 	default:
 		log.Fatalln("Unknown mode", pc.Mode)
 	}
 	return
 }
 
-func (pc *PMPClient) getPasswordPlugin(entry *PMPEntry, reason string, addreason string) (err error) {
-	// search for systems
+// PMPSystem holds info about system/resource
+type PMPSystem struct {
+	ID       string
+	Name     string
+	Type     string
+	NoOfAccs int
+}
+
+func (pc *PMPClient) systemByNamePlugin(resource string) (res []PMPSystem, err error) {
+	// search for resources
 	Debug("Getting systems/resources list")
-	u := "/api/json/request" +
-		"?AUTHTOKEN=" + pc.AuthKey +
-		"&OPERATION_NAME=GET_RESOURCES" +
-		`&INPUT_DATA={"operation":{"Details":{` +
-		`"SEARCHCOLUMN":"RESOURCENAME",` +
-		`"SEARCHVALUE":"` + entry.system + `",` +
-		`"VIEWTYPE":"ALLMYPASSWORD","STARTINDEX":"0",` +
-		`"LIMIT":"50","SEARCHTYPE":"RESOURCE"}}}`
+	u := "/api/json/request?AUTHTOKEN=" + pc.AuthKey + "&" +
+		url.Values{
+			"OPERATION_NAME": {"GET_RESOURCES"},
+			"INPUT_DATA": {`{"operation":{"Details":{` +
+				`"SEARCHCOLUMN":"RESOURCENAME","SEARCHVALUE":"` + resource + `",` +
+				`"VIEWTYPE":"ALLMYPASSWORD","STARTINDEX":"0","LIMIT":"50","SEARCHTYPE":"RESOURCE"}}}`},
+		}.Encode()
 	var resr PMPAPIResultResources
 	body, status, err := pc.Post(pc.BaseURL + u)
 	if err != nil || status != 200 {
@@ -623,88 +641,155 @@ func (pc *PMPClient) getPasswordPlugin(entry *PMPEntry, reason string, addreason
 		log.Fatalln("Unable to parse response:", err)
 	}
 	if resr.Operation.Result.Status != "Success" {
-		return errors.New("Unable to get systems")
+		return nil, errors.New("Unable to get systems")
 	}
 
 	Info("Found systems:")
-	var id string
 	for i, r := range resr.Operation.Details {
-		Info("[", i, "] "+r.ResourceID+": "+r.ResourceName+
-			" ("+r.ResourceType+") with "+r.NoOfAccounts+" account(s)")
-		// search for exact name or get first one
-		if i == 0 || r.ResourceName == entry.system {
-			id = r.ResourceID
-			entry.system = r.ResourceName
+		Info("[" + strconv.Itoa(i) + "] " + r.ResourceID + ": " + r.ResourceName +
+			" (" + r.ResourceType + ") with " + r.NoOfAccounts + " account(s)")
+		count, err := strconv.Atoi(r.NoOfAccounts)
+		if err != nil {
+			return nil, err
 		}
+		res = append(res, PMPSystem{
+			ID:       r.ResourceID,
+			Name:     r.ResourceName,
+			Type:     r.ResourceType,
+			NoOfAccs: count,
+		})
 	}
-	// search for accounts
-	Debug("Getting accounts for resource " + id)
-	u = "/api/json/request" +
-		"?AUTHTOKEN=" + pc.AuthKey +
-		"&OPERATION_NAME=GET_RESOURCEACCOUNTLIST" +
-		`&INPUT_DATA={"operation":{"Details":{` +
-		`"SEARCHVALUE":"` + entry.user + `",` +
-		`"SEARCHTYPE":"RESOURCE","SEARCHCOLUMN":"ALL","LIMIT":"50",` +
-		`"STARTINDEX":"0",` +
-		`"RESOURCEID":"` + id + `",` +
-		`"VIEWTYPE":"ALLMYPASSWORD"}}}`
-	res, err := pc.DoPluginRest(u, "POST")
+	return
+}
+
+// PMPAccount holds info about account
+type PMPAccount struct {
+	ID        string
+	Name      string
+	PassID    string
+	TicketReq bool
+	ReasonReq bool
+}
+
+func (pc *PMPClient) accsForSystemByNamePlugin(resID string, user string) (res []PMPAccount, err error) {
+	Debug("Getting accounts for resource " + resID)
+	u := "/api/json/request?AUTHTOKEN=" + pc.AuthKey + "&" +
+		url.Values{
+			"OPERATION_NAME": {"GET_RESOURCEACCOUNTLIST"},
+			"INPUT_DATA": {`{"operation":{"Details":{` +
+				`"RESOURCEID":"` + resID + `","VIEWTYPE":"ALLMYPASSWORD"}}}`},
+		}.Encode()
+	r, success, err := pc.DoPluginRest(u, "POST")
 	if err != nil {
 		log.Fatalln("Unable to call GET_RESOURCEACCOUNTLIST:", err)
 	}
-	if res.Operation.Result.Status != "Success" {
-		Info("[" + res.Operation.Name + "] " + res.Operation.Result.Status + ": " + res.Operation.Result.Message)
-		return errors.New("Unable to get account info")
+	if !success {
+		Info("[" + r.Operation.Name + "] " + r.Operation.Result.Status + ": " + r.Operation.Result.Message)
+		return nil, errors.New("Unable to get account info")
 	}
-	Info("Found accounts:")
-	for i, a := range res.Operation.Details.AccountList {
-		Info("[", i, "] "+a.AccountID+": "+a.AccountName+
+	Info("Found accounts for " + resID + ":")
+	for i, a := range r.Operation.Details.AccountList {
+		Info("["+strconv.Itoa(i)+"] "+a.AccountID+": "+a.AccountName+
 			" ( passid: "+a.PasswdID+
 			"; ticket: ", a.IsTicketIDReqd, "; reson:", a.IsReasonRequired, ")")
-		// search for exact name or get first one
-		if i == 0 || a.AccountName == entry.user {
-			id = a.AccountID
-			entry.user = a.AccountName
+		if strings.Contains(a.AccountName, user) {
+			res = append(res, PMPAccount{
+				ID:        a.AccountID,
+				Name:      a.AccountName,
+				PassID:    a.PasswdID,
+				TicketReq: strings.ToUpper(a.IsTicketIDReqd) == "TRUE",
+				ReasonReq: strings.ToUpper(a.IsReasonRequired) == "TRUE",
+			})
+		} else {
+			Debug("Ignoring " + a.AccountName + " (" + a.AccountID + ")")
 		}
 	}
+	return
+}
 
-	// get password, finally
-	Debug("Getting password for account " + id)
-	u = "/api/json/request?AUTHTOKEN=" + pc.AuthKey + "&" +
+func (pc *PMPClient) getPasswordByIDPlugin(passID string, reason string, addreason string) (pass string, err error) {
+	// get passwords, finally
+	Debug("Getting password for account " + passID)
+	u := "/api/json/request?AUTHTOKEN=" + pc.AuthKey + "&" +
 		url.Values{
 			"OPERATION_NAME": {"GET_PASSWORD"},
 			"INPUT_DATA": {`{"operation":{"Details":{` +
-				`"PASSWDID":"` + id + `", "REASON":"` + addreason + `", "TICKETID":"` + reason + `"}}}"`},
+				`"PASSWDID":"` + passID + `", "REASON":"` + addreason + `", "TICKETID":"` + reason + `"}}}"`},
 		}.Encode()
-	res, err = pc.DoPluginRest(u, "GET")
+	r, success, err := pc.DoPluginRest(u, "GET")
 	if err != nil {
 		log.Fatalln("Unable to call GET_PASSWORD:", err)
 	}
-	if res.Operation.Result.Status != "Success" {
-		Info("[" + res.Operation.Name + "] " + res.Operation.Result.Status + ": " + res.Operation.Result.Message)
-		return errors.New("Unable to get password")
+	if !success {
+		Info("[" + r.Operation.Name + "] " + r.Operation.Result.Status + ": " + r.Operation.Result.Message)
+		return "", errors.New("Unable to get password")
 	}
-	entry.password = res.Operation.Details.Password
+	pass = r.Operation.Details.Password
+	return
+}
+
+func (pc *PMPClient) getPasswordPlugin(system string, user string, reason string, addreason string) (res []PMPEntry, err error) {
+	// search for systems
+	sys, err := pc.systemByNamePlugin(system)
+	if err != nil {
+		return
+	}
+
+	// search for accounts
+	for _, s := range sys {
+		accs, err := pc.accsForSystemByNamePlugin(s.ID, user)
+		if err != nil {
+			return res, err
+		}
+		for _, a := range accs {
+			// get password
+			var p string
+			if (a.TicketReq && reason == "") || (a.ReasonReq && addreason == "") {
+				if a.TicketReq && !a.ReasonReq {
+					fmt.Println("Ticket required for", a.Name, "@", s.Name)
+				} else if a.ReasonReq && !a.TicketReq {
+					fmt.Println("Reason required for", a.Name, "@", s.Name)
+				} else if a.ReasonReq && a.TicketReq {
+					fmt.Println("Ticket and Reason required for", a.Name, "@", s.Name)
+				}
+				p = "***"
+			} else {
+				p, err = pc.getPasswordByIDPlugin(a.PassID, reason, addreason)
+				if err != nil {
+					return res, err
+				}
+			}
+			res = append(res, PMPEntry{
+				system:   s.Name,
+				user:     a.Name,
+				password: p,
+			})
+		}
+	}
 
 	return
 }
 
-func (pc *PMPClient) getPasswordBrowser(entry *PMPEntry, reason string, addreason string) (err error) {
+func (pc *PMPClient) getPasswordBrowser(system, user, reason string, addreason string) (res []PMPEntry, err error) {
 	// get session id
 	pmpcc := pc.GetCookie(pc.BaseURL, "pmpcc")
 	// query password
 	u := pc.BaseURL + "/jsp/xmlhttp/PasswdRetriveAjaxResponse.jsp?RequestType=PasswordRetrived"
 	resp, status, err := pc.PostForm(u, url.Values{
-		"resource":  {entry.system},
-		"account":   {entry.user},
+		"resource":  {system},
+		"account":   {user},
 		"REASON":    {reason},
 		"ADDREASON": {addreason},
 		"pmpcp":     {pmpcc},
 	})
 	if status != 200 {
-		err = errors.New("Failed to get password for: " + entry.String() + ", response: " + resp)
+		err = errors.New("Failed to get password for: " + user + " @ " + system + ", response: " + resp)
 	} else {
-		entry.password = strings.Trim(resp, " \n\t")
+		res = append(res, PMPEntry{
+			system:   system,
+			user:     user,
+			password: strings.Trim(resp, " \n\t"),
+		})
 	}
 	return
 }
@@ -864,9 +949,13 @@ func printHelp() {
 	fmt.Println("  pmpcli l=https://127.0.0.1:7272 u=user p=pass o=org1 s=serv a=root t=inc1234 r=check # get password")
 	fmt.Println("  eval $(pmpcli .... o=org1 s=serv a=root ... env)                                     # set env vars with password")
 	fmt.Println("  pmpcli l=https://127.0.0.1:7272 u=user p=pass o=org1 i=serv a=root                   # search")
-	fmt.Println("Help:")
+	fmt.Println("Help   :")
 	fmt.Println("  s|i - system name has alias 'i'")
+	fmt.Println("  m   - mode 'plugin' or 'browser' (default is plugin)")
+	fmt.Println("        plugin : uses API, able to search")
+	fmt.Println("        browser: uses http calls, needs exact system/user names")
 	fmt.Println("  env - will print commands to setup bash env")
+	fmt.Println("        NOTICE: this mode is experimental")
 }
 
 func parseArgs(args []string) (cfg PMPConfig) {
@@ -874,6 +963,14 @@ func parseArgs(args []string) (cfg PMPConfig) {
 	if len(os.Args) < 2 {
 		printHelp()
 		os.Exit(1)
+	}
+	for _, a := range os.Args[1:] {
+		if strings.SplitN(a, "=", 2)[0] == "env" {
+			cfg.Stdout = os.Stdout
+			// swap descriptors (so normal output goes to err)
+			os.Stdout = os.Stderr
+
+		}
 	}
 	for _, a := range os.Args[1:] {
 		Debug("arg:", a)
@@ -924,7 +1021,16 @@ func parseArgs(args []string) (cfg PMPConfig) {
 			case "r":
 				Debug("reason:", v)
 				cfg.Reason = v
-			// TOOD: add PMPMode
+			case "m":
+				Debug("mode:", v)
+				switch v {
+				case "p", "plugin":
+					cfg.Mode = PMPModePlugin
+				case "b", "browser":
+					cfg.Mode = PMPModeBrowser
+				default:
+					log.Fatalln("ERROR: Wrong mode:", v)
+				}
 			case "cert":
 				Debug("certificate:", v)
 				if v == "ignore" {
@@ -953,28 +1059,29 @@ func getPasswords(cfg PMPConfig) {
 		log.Fatalln(err)
 	}
 	Debug("GET PASSWORD")
-	entry := &PMPEntry{system: cfg.System, user: cfg.Account}
-	// TODO: redo for multiple results
-	// TODO: browser: get password even without reason/ticket
 	// TODO: plugin: check if reason/password needed and do just search if not provided
-	if err = pc.GetPassword(entry, cfg.Ticket, cfg.Reason); err != nil {
+	res, err := pc.GetPasswords(cfg.System, cfg.Account, cfg.Ticket, cfg.Reason)
+	if err != nil {
 		log.Fatalln(err)
 	}
 	Debug("RESULTS")
-	if cfg.SetEnv {
-		// TODO: need to redirect stdout to stderr (to get more control over what goes to stdout)
-		v := entry.system + "_" + entry.user
-		// sanitize variable name
-		re := regexp.MustCompile("[[:alnum:]_]+")
-		v = strings.Join(re.FindAllString(v, -1), "_")
-		// sanitize password
-		p := strings.Replace(entry.password, "'", `'"'"'`, -1)
-		// print env
-		fmt.Println("echo '# Setting " + v +
-			" for " + entry.user + " @ " + entry.system +
-			"'; " + v + "='" + p + "'")
-	} else {
-		fmt.Println(entry.user + " @ " + entry.system + " / " + entry.password)
+	for _, e := range res {
+		if cfg.SetEnv {
+			// TODO: need to redirect stdout to stderr (to get more control over what goes to stdout)
+			v := e.system + "_" + e.user
+			// sanitize variable name
+			re := regexp.MustCompile("[[:alnum:]_]+")
+			v = strings.Join(re.FindAllString(v, -1), "_")
+			// sanitize password
+			p := strings.Replace(e.password, "'", `'"'"'`, -1)
+			// print env
+			fmt.Println("Setting " + v + " for " + e.user + " @ " + e.system)
+			os.Stdout = cfg.Stdout
+			fmt.Println(v + "='" + p + "'")
+			os.Stdout = os.Stderr
+		} else {
+			fmt.Println(e.user + " @ " + e.system + " / " + e.password)
+		}
 	}
 	if pc.LogOut(); err != nil {
 		log.Fatalln(err)
