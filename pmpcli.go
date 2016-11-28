@@ -27,10 +27,10 @@ import (
 // -----------------------------------------------------------------------------
 
 // BUILD number
-const BUILD ="201611251019"
+const BUILD ="201611282000"
 
 // VERSION of this piece of ***
-const VERSION = "0.2.1." + BUILD
+const VERSION = "0.2.2." + BUILD
 
 // VERSIONAPI engine/plugin versions
 const VERSIONAPI = "engine: 8.6.0.8600 / plugin: 1.0.2.4"
@@ -236,7 +236,6 @@ func NewPMPClient(cfg PMPConfig) (pc *PMPClient, err error) {
 }
 
 // DoPluginRest do post against rest endpoint and returns unmarshaled json
-// TODO: do 'status' check inside; add boolean out param
 func (pc *PMPClient) DoPluginRest(u string, method string) (res PMPAPIResult, success bool, err error) {
 	u = pc.BaseURL + u
 	var body string
@@ -277,18 +276,6 @@ func (pc *PMPClient) SetUserDomain() (err error) {
 // loginAPI tries to authenticate via API
 func (pc *PMPClient) loginAPI(user string, password string) (success bool, err error) {
 	pc.User = user
-	// pc.Mode == PMPModePlugin
-
-	// u := pc.BaseURL + "/api/json/request?OPERATION_NAME=GET_AUTHENTICATION_MODE"
-	// body, status, err := pc.Post(u)
-	// if err != nil || status != 200 {
-	// 	log.Panic(err)
-	// }
-
-	// var res PMPAPIResult
-	// if err = json.Unmarshal([]byte(body), &res); err != nil {
-	// 	log.Fatalln(err)
-	// }
 
 	res, success, err := pc.DoPluginRest("/api/json/request?OPERATION_NAME=GET_AUTHENTICATION_MODE", "POST")
 	if err != nil {
@@ -302,7 +289,12 @@ func (pc *PMPClient) loginAPI(user string, password string) (success bool, err e
 				log.Panic(err)
 			}
 		}
-		pc.Header["orgName"] = pc.Domain
+
+		org, _, err := pc.getOrgAuthFromLoginPage()
+		if err != nil {
+			return false, err
+		}
+		pc.Header["orgName"] = org
 
 		// try API again
 		res, success, err = pc.DoPluginRest("/api/json/request?OPERATION_NAME=GET_AUTHENTICATION_MODE", "POST")
@@ -354,14 +346,7 @@ func (pc *PMPClient) loginAPI(user string, password string) (success bool, err e
 		"&FIRSTAUTHMODE=" + det.FirsFactor +
 		"&DOMAINNAME=" + pc.Domain
 	Debug("Auth URL: " + u)
-	// body, status, err = pc.Post(u)
-	// if err != nil || status != 200 {
-	// 	log.Panic(err)
-	// }
 
-	// if err = json.Unmarshal([]byte(body), &res); err != nil {
-	// 	log.Fatalln(err)
-	// }
 	if res, success, err = pc.DoPluginRest(u, "POST"); err != nil {
 		log.Fatalln(err)
 	}
@@ -392,10 +377,7 @@ func (pc *PMPClient) loginAPI(user string, password string) (success bool, err e
 	return true, nil
 }
 
-// loginBrowser submits login form
-func (pc *PMPClient) loginBrowser(user string, password string) (success bool, err error) {
-	pc.User = user
-	var auth string
+func (pc *PMPClient) getOrgAuthFromLoginPage() (org string, auth string, err error) {
 	// get form input fields
 	body, status, err := pc.Get(pc.LoginURL)
 	if err != nil {
@@ -407,7 +389,7 @@ func (pc *PMPClient) loginBrowser(user string, password string) (success bool, e
 	//   ...
 	// }
 	if status == 200 && err == nil {
-		if pc.Org, err = htmlElementValByID(body, "ORGN_NAME"); err != nil {
+		if org, err = htmlElementValByID(body, "ORGN_NAME"); err != nil {
 			log.Fatalln(err)
 		}
 		if auth, err = htmlElementValByID(body, "AUTHRULE_NAME"); err != nil {
@@ -416,6 +398,18 @@ func (pc *PMPClient) loginBrowser(user string, password string) (success bool, e
 	} else {
 		err = errors.New("Bad status " + string(status) + " for " + pc.LoginURL)
 	}
+	return
+}
+
+// loginBrowser submits login form
+func (pc *PMPClient) loginBrowser(user string, password string) (success bool, err error) {
+	pc.User = user
+	// get org and auth method
+	org, auth, err := pc.getOrgAuthFromLoginPage()
+	if err != nil {
+		return
+	}
+	pc.Org = org
 
 	// get domain
 	if pc.Domain == "" {
@@ -441,7 +435,7 @@ func (pc *PMPClient) loginBrowser(user string, password string) (success bool, e
 		"j_password":    {password},
 		"AUTHRULE_NAME": {auth},
 	}
-	_, status, err = pc.PostForm(u, vals)
+	_, status, err := pc.PostForm(u, vals)
 	if err != nil {
 		log.Fatalln(err)
 	}
@@ -464,7 +458,7 @@ func (pc *PMPClient) Login(user string, password string) (success bool, err erro
 	defer func() {
 		if r := recover(); r != nil {
 			Debug("Recovering", r)
-			Info("Folling to Browser login")
+			fmt.Println("Folling to Browser login")
 			success, err = pc.loginBrowser(user, password)
 			pc.Mode = PMPModeBrowser
 		}
@@ -494,7 +488,6 @@ func (pc *PMPClient) LogOut() (err error) {
 }
 
 func (pc *PMPClient) logOutPlugin() (err error) {
-	// TODO: fix "Password Manager Pro has detected harmful contents in the input"
 	t := time.Now().Unix()
 	u := "/api/json/request?AUTHTOKEN=" + pc.AuthKey + "&" +
 		url.Values{
@@ -1059,7 +1052,6 @@ func getPasswords(cfg PMPConfig) {
 		log.Fatalln(err)
 	}
 	Debug("GET PASSWORD")
-	// TODO: plugin: check if reason/password needed and do just search if not provided
 	res, err := pc.GetPasswords(cfg.System, cfg.Account, cfg.Ticket, cfg.Reason)
 	if err != nil {
 		log.Fatalln(err)
@@ -1067,7 +1059,6 @@ func getPasswords(cfg PMPConfig) {
 	Debug("RESULTS")
 	for _, e := range res {
 		if cfg.SetEnv {
-			// TODO: need to redirect stdout to stderr (to get more control over what goes to stdout)
 			v := e.system + "_" + e.user
 			// sanitize variable name
 			re := regexp.MustCompile("[[:alnum:]_]+")
