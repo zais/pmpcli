@@ -27,10 +27,10 @@ import (
 // -----------------------------------------------------------------------------
 
 // BUILD number
-const BUILD ="201611282000"
+const BUILD ="201611292037"
 
 // VERSION of this piece of ***
-const VERSION = "0.2.2." + BUILD
+const VERSION = "0.2.3." + BUILD
 
 // VERSIONAPI engine/plugin versions
 const VERSIONAPI = "engine: 8.6.0.8600 / plugin: 1.0.2.4"
@@ -80,11 +80,23 @@ func Debugf(format string, v ...interface{}) {
 // PMPMode defines client behavior
 type PMPMode int
 
+// PMPFilter defines search behavior
+type PMPFilter int
+
 const (
 	// PMPModePlugin emulate plugin
 	PMPModePlugin PMPMode = 1 + iota
 	// PMPModeBrowser emulate browser
 	PMPModeBrowser
+)
+
+const (
+	// PMPFilterContains emulate plugin
+	PMPFilterContains PMPFilter = 1 + iota
+	// PMPFilterExact emulate browser
+	PMPFilterExact
+	// PMPFilterStartsWith emulate browser
+	PMPFilterStartsWith
 )
 
 // PMPAPIResult is basic json resopnse
@@ -186,6 +198,7 @@ type PMPConfig struct {
 	Ticket     string
 	Reason     string
 	Mode       PMPMode
+	Filter     PMPFilter
 	Stdout     *os.File
 	SetEnv     bool
 	IgnoreCert bool
@@ -341,11 +354,12 @@ func (pc *PMPClient) loginAPI(user string, password string) (success bool, err e
 
 	// auth
 	u := "/api/json/auth?" +
-		"USERNAME=" + user +
-		"&PASSWORD=" + password +
-		"&FIRSTAUTHMODE=" + det.FirsFactor +
-		"&DOMAINNAME=" + pc.Domain
-	Debug("Auth URL: " + u)
+		url.Values{
+			"USERNAME":      {user},
+			"PASSWORD":      {password},
+			"FIRSTAUTHMODE": {det.FirsFactor},
+			"DOMAINNAME":    {pc.Domain},
+		}.Encode()
 
 	if res, success, err = pc.DoPluginRest(u, "POST"); err != nil {
 		log.Fatalln(err)
@@ -363,11 +377,11 @@ func (pc *PMPClient) loginAPI(user string, password string) (success bool, err e
 	Debug("OrgList:")
 	found := false
 	for _, o := range res.Operation.Details.Permissions.UserDetails.OrgList {
-		Debug(o.OrgID, ": "+o.OrgURLName+" = "+o.OrgName)
+		Debugf("%5v: %-8v = %v", o.OrgID, o.OrgURLName, o.OrgName)
 		if o.OrgURLName == pc.Org {
-			pc.Org = o.OrgName
+			pc.Org = o.OrgURLName
 			pc.OrgID = o.OrgID
-			pc.Header["orgName"] = pc.Org
+			pc.Header["orgName"] = o.OrgURLName
 			found = true
 		}
 	}
@@ -595,10 +609,10 @@ func (pc *PMPClient) ChangeOrg(org string) (err error) {
 }
 
 // GetPasswords changes org if it can
-func (pc *PMPClient) GetPasswords(system string, user string, reason string, addreason string) (res []PMPEntry, err error) {
+func (pc *PMPClient) GetPasswords(system string, user string, reason string, addreason string, filter PMPFilter) (res []PMPEntry, err error) {
 	switch pc.Mode {
 	case PMPModePlugin:
-		res, err = pc.getPasswordPlugin(system, user, reason, addreason)
+		res, err = pc.getPasswordPlugin(system, user, reason, addreason, filter)
 	case PMPModeBrowser:
 		res, err = pc.getPasswordBrowser(system, user, reason, addreason)
 	default:
@@ -645,6 +659,7 @@ func (pc *PMPClient) systemByNamePlugin(resource string) (res []PMPSystem, err e
 		if err != nil {
 			return nil, err
 		}
+
 		res = append(res, PMPSystem{
 			ID:       r.ResourceID,
 			Name:     r.ResourceName,
@@ -685,6 +700,7 @@ func (pc *PMPClient) accsForSystemByNamePlugin(resID string, user string) (res [
 		Info("["+strconv.Itoa(i)+"] "+a.AccountID+": "+a.AccountName+
 			" ( passid: "+a.PasswdID+
 			"; ticket: ", a.IsTicketIDReqd, "; reson:", a.IsReasonRequired, ")")
+		// API will return all accounts, so need to apply 'filter' manually
 		if strings.Contains(a.AccountName, user) {
 			res = append(res, PMPAccount{
 				ID:        a.AccountID,
@@ -721,7 +737,9 @@ func (pc *PMPClient) getPasswordByIDPlugin(passID string, reason string, addreas
 	return
 }
 
-func (pc *PMPClient) getPasswordPlugin(system string, user string, reason string, addreason string) (res []PMPEntry, err error) {
+func (pc *PMPClient) getPasswordPlugin(system, user, reason, addreason string, filter PMPFilter) (res []PMPEntry, err error) {
+	// TODO: search system/account method exact|start|contains
+
 	// search for systems
 	sys, err := pc.systemByNamePlugin(system)
 	if err != nil {
@@ -730,11 +748,23 @@ func (pc *PMPClient) getPasswordPlugin(system string, user string, reason string
 
 	// search for accounts
 	for _, s := range sys {
+		// filter systems
+		if (filter == PMPFilterContains && !strings.Contains(s.Name, system)) ||
+			(filter == PMPFilterStartsWith && strings.Index(s.Name, system) != 0) ||
+			(filter == PMPFilterExact && s.Name != system) {
+			continue
+		}
 		accs, err := pc.accsForSystemByNamePlugin(s.ID, user)
 		if err != nil {
 			return res, err
 		}
 		for _, a := range accs {
+			// filter accounts
+			if (filter == PMPFilterContains && !strings.Contains(a.Name, user)) ||
+				(filter == PMPFilterStartsWith && strings.Index(a.Name, user) != 0) ||
+				(filter == PMPFilterExact && a.Name != user) {
+				continue
+			}
 			// get password
 			var p string
 			if (a.TicketReq && reason == "") || (a.ReasonReq && addreason == "") {
@@ -745,7 +775,7 @@ func (pc *PMPClient) getPasswordPlugin(system string, user string, reason string
 				} else if a.ReasonReq && a.TicketReq {
 					fmt.Println("Ticket and Reason required for", a.Name, "@", s.Name)
 				}
-				p = "***"
+				p = ""
 			} else {
 				p, err = pc.getPasswordByIDPlugin(a.PassID, reason, addreason)
 				if err != nil {
@@ -935,18 +965,25 @@ func htmlElementValByID(htmlStr string, name string) (str string, err error) {
 // -----------------------------------------------------------------------------
 
 func printHelp() {
-	fmt.Println("Version:", VERSION, "( for", VERSIONAPI, ")")
+	fmt.Println("Version:", VERSION, "( PMP", VERSIONAPI, ")")
+	fmt.Println("")
 	fmt.Println("Usage  :")
-	fmt.Println("  pmpcli l=<login_url> [d=<domain>] u=<user> p=<pass> o=<org> s=<system> a=<account> t=<ticket> r=<reason> [cert=ignore] [<env>|<verbose>|<debug>]")
+	fmt.Println("  pmpcli l=<login_url> [d=<domain>] u=<user> p=<pass> o=<org> s=<system> a=<account> t=<ticket> r=<reason> [f=s|c|e] [m=p|b] [cert=ignore] [env|verbose|debug]")
+	fmt.Println("")
 	fmt.Println("Example:")
 	fmt.Println("  pmpcli l=https://127.0.0.1:7272 u=user p=pass o=org1 s=serv a=root t=inc1234 r=check # get password")
 	fmt.Println("  eval $(pmpcli .... o=org1 s=serv a=root ... env)                                     # set env vars with password")
 	fmt.Println("  pmpcli l=https://127.0.0.1:7272 u=user p=pass o=org1 i=serv a=root                   # search")
+	fmt.Println("")
 	fmt.Println("Help   :")
-	fmt.Println("  s|i - system name has alias 'i'")
+	fmt.Println("  s|i - system name (has alias 'i')")
+	fmt.Println("  f   - find method for system and account")
+	fmt.Println("        s|starts_with : name starts with")
+	fmt.Println("        c|contains    : name contains")
+	fmt.Println("        e|exact       : name exactly mathces")
 	fmt.Println("  m   - mode 'plugin' or 'browser' (default is plugin)")
-	fmt.Println("        plugin : uses API, able to search")
-	fmt.Println("        browser: uses http calls, needs exact system/user names")
+	fmt.Println("        p|plugin : uses API, able to search")
+	fmt.Println("        b|browser: uses http calls, needs exact system/user names")
 	fmt.Println("  env - will print commands to setup bash env")
 	fmt.Println("        NOTICE: this mode is experimental")
 }
@@ -1024,6 +1061,18 @@ func parseArgs(args []string) (cfg PMPConfig) {
 				default:
 					log.Fatalln("ERROR: Wrong mode:", v)
 				}
+			case "f":
+				Debug("filter:", v)
+				switch v {
+				case "c", "contains":
+					cfg.Filter = PMPFilterContains
+				case "s", "starts", "starts_with":
+					cfg.Filter = PMPFilterStartsWith
+				case "e", "exact":
+					cfg.Filter = PMPFilterExact
+				default:
+					log.Fatalln("ERROR: Wrong filter:", v)
+				}
 			case "cert":
 				Debug("certificate:", v)
 				if v == "ignore" {
@@ -1052,7 +1101,7 @@ func getPasswords(cfg PMPConfig) {
 		log.Fatalln(err)
 	}
 	Debug("GET PASSWORD")
-	res, err := pc.GetPasswords(cfg.System, cfg.Account, cfg.Ticket, cfg.Reason)
+	res, err := pc.GetPasswords(cfg.System, cfg.Account, cfg.Ticket, cfg.Reason, cfg.Filter)
 	if err != nil {
 		log.Fatalln(err)
 	}
@@ -1066,10 +1115,14 @@ func getPasswords(cfg PMPConfig) {
 			// sanitize password
 			p := strings.Replace(e.password, "'", `'"'"'`, -1)
 			// print env
-			fmt.Println("Setting " + v + " for " + e.user + " @ " + e.system)
-			os.Stdout = cfg.Stdout
-			fmt.Println(v + "='" + p + "'")
-			os.Stdout = os.Stderr
+			if p != "" {
+				fmt.Println("Setting " + v + " for " + e.user + " @ " + e.system)
+				os.Stdout = cfg.Stdout
+				fmt.Println(v + "='" + p + "'")
+				os.Stdout = os.Stderr
+			} else {
+				fmt.Println("Password is empty for " + e.user + " @ " + e.system)
+			}
 		} else {
 			fmt.Println(e.user + " @ " + e.system + " / " + e.password)
 		}
