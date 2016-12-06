@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -27,10 +28,10 @@ import (
 // -----------------------------------------------------------------------------
 
 // BUILD number
-const BUILD ="201611292037"
+const BUILD ="201612062026"
 
 // VERSION of this piece of ***
-const VERSION = "0.2.3." + BUILD
+const VERSION = "0.2.4." + BUILD
 
 // VERSIONAPI engine/plugin versions
 const VERSIONAPI = "engine: 8.6.0.8600 / plugin: 1.0.2.4"
@@ -71,6 +72,26 @@ func Debugf(format string, v ...interface{}) {
 	if DEBUG {
 		log.Printf(format, v...)
 	}
+}
+
+// Warn prints warning msg
+func Warn(v string) {
+	var yellow, reset string
+	if runtime.GOOS != "windows" {
+		yellow = "\033[38;5;3m"
+		reset = "\033[0m"
+	}
+	log.Println(yellow + "WARNING: " + v + reset)
+}
+
+// Err prints warning msg
+func Err(v string) {
+	var red, reset string
+	if runtime.GOOS != "windows" {
+		red = "\033[38;5;1m"
+		reset = "\033[0m"
+	}
+	log.Println(red + "ERROR: " + v + reset)
 }
 
 // -----------------------------------------------------------------------------
@@ -629,16 +650,28 @@ type PMPSystem struct {
 	NoOfAccs int
 }
 
-func (pc *PMPClient) systemByNamePlugin(resource string) (res []PMPSystem, err error) {
+func (pc *PMPClient) systemByNamePlugin(resource string, account string) (res []PMPSystem, err error) {
 	// search for resources
 	Debug("Getting systems/resources list")
-	u := "/api/json/request?AUTHTOKEN=" + pc.AuthKey + "&" +
-		url.Values{
-			"OPERATION_NAME": {"GET_RESOURCES"},
-			"INPUT_DATA": {`{"operation":{"Details":{` +
-				`"SEARCHCOLUMN":"RESOURCENAME","SEARCHVALUE":"` + resource + `",` +
-				`"VIEWTYPE":"ALLMYPASSWORD","STARTINDEX":"0","LIMIT":"50","SEARCHTYPE":"RESOURCE"}}}`},
-		}.Encode()
+	var u string
+	if resource == "" {
+		Debug("Resource is empty will use account name to search")
+		u = "/api/json/request?AUTHTOKEN=" + pc.AuthKey + "&" +
+			url.Values{
+				"OPERATION_NAME": {"GET_RESOURCES"},
+				"INPUT_DATA": {`{"operation":{"Details":{` +
+					`"SEARCHCOLUMN":"LOGINNAME","SEARCHVALUE":"` + account + `",` +
+					`"VIEWTYPE":"ALLMYPASSWORD","STARTINDEX":"0","LIMIT":"50","SEARCHTYPE":"RESOURCE"}}}`},
+			}.Encode()
+	} else {
+		u = "/api/json/request?AUTHTOKEN=" + pc.AuthKey + "&" +
+			url.Values{
+				"OPERATION_NAME": {"GET_RESOURCES"},
+				"INPUT_DATA": {`{"operation":{"Details":{` +
+					`"SEARCHCOLUMN":"RESOURCENAME","SEARCHVALUE":"` + resource + `",` +
+					`"VIEWTYPE":"ALLMYPASSWORD","STARTINDEX":"0","LIMIT":"50","SEARCHTYPE":"RESOURCE"}}}`},
+			}.Encode()
+	}
 	var resr PMPAPIResultResources
 	body, status, err := pc.Post(pc.BaseURL + u)
 	if err != nil || status != 200 {
@@ -701,7 +734,7 @@ func (pc *PMPClient) accsForSystemByNamePlugin(resID string, user string) (res [
 			" ( passid: "+a.PasswdID+
 			"; ticket: ", a.IsTicketIDReqd, "; reson:", a.IsReasonRequired, ")")
 		// API will return all accounts, so need to apply 'filter' manually
-		if strings.Contains(a.AccountName, user) {
+		if strings.Contains(strings.ToLower(a.AccountName), strings.ToLower(user)) {
 			res = append(res, PMPAccount{
 				ID:        a.AccountID,
 				Name:      a.AccountName,
@@ -731,17 +764,15 @@ func (pc *PMPClient) getPasswordByIDPlugin(passID string, reason string, addreas
 	}
 	if !success {
 		Info("[" + r.Operation.Name + "] " + r.Operation.Result.Status + ": " + r.Operation.Result.Message)
-		return "", errors.New("Unable to get password")
+		return "", errors.New("Unable to get password: " + r.Operation.Result.Message)
 	}
 	pass = r.Operation.Details.Password
 	return
 }
 
 func (pc *PMPClient) getPasswordPlugin(system, user, reason, addreason string, filter PMPFilter) (res []PMPEntry, err error) {
-	// TODO: search system/account method exact|start|contains
-
 	// search for systems
-	sys, err := pc.systemByNamePlugin(system)
+	sys, err := pc.systemByNamePlugin(system, user)
 	if err != nil {
 		return
 	}
@@ -749,9 +780,9 @@ func (pc *PMPClient) getPasswordPlugin(system, user, reason, addreason string, f
 	// search for accounts
 	for _, s := range sys {
 		// filter systems
-		if (filter == PMPFilterContains && !strings.Contains(s.Name, system)) ||
-			(filter == PMPFilterStartsWith && strings.Index(s.Name, system) != 0) ||
-			(filter == PMPFilterExact && s.Name != system) {
+		if (filter == PMPFilterContains && !strings.Contains(strings.ToLower(s.Name), strings.ToLower(system))) ||
+			(filter == PMPFilterStartsWith && strings.Index(strings.ToLower(s.Name), strings.ToLower(system)) != 0) ||
+			(filter == PMPFilterExact && strings.ToLower(s.Name) != strings.ToLower(system)) {
 			continue
 		}
 		accs, err := pc.accsForSystemByNamePlugin(s.ID, user)
@@ -769,11 +800,11 @@ func (pc *PMPClient) getPasswordPlugin(system, user, reason, addreason string, f
 			var p string
 			if (a.TicketReq && reason == "") || (a.ReasonReq && addreason == "") {
 				if a.TicketReq && !a.ReasonReq {
-					fmt.Println("Ticket required for", a.Name, "@", s.Name)
+					Warn("Ticket required for " + a.Name + "@" + s.Name)
 				} else if a.ReasonReq && !a.TicketReq {
-					fmt.Println("Reason required for", a.Name, "@", s.Name)
+					Warn("Reason required for " + a.Name + "@" + s.Name)
 				} else if a.ReasonReq && a.TicketReq {
-					fmt.Println("Ticket and Reason required for", a.Name, "@", s.Name)
+					Warn("Ticket and Reason required for " + a.Name + "@" + s.Name)
 				}
 				p = ""
 			} else {
@@ -968,7 +999,7 @@ func printHelp() {
 	fmt.Println("Version:", VERSION, "( PMP", VERSIONAPI, ")")
 	fmt.Println("")
 	fmt.Println("Usage  :")
-	fmt.Println("  pmpcli l=<login_url> [d=<domain>] u=<user> p=<pass> o=<org> s=<system> a=<account> t=<ticket> r=<reason> [f=s|c|e] [m=p|b] [cert=ignore] [env|verbose|debug]")
+	fmt.Println("  pmpcli l=<login_url> [d=<domain>] u=<user> p=<pass> o=<org> s=<system> a=<account> t=<ticket> r=<reason> [f=s|c|e] [m=p|b] [cert=ignore] [env|verbose|debug|help]")
 	fmt.Println("")
 	fmt.Println("Example:")
 	fmt.Println("  pmpcli l=https://127.0.0.1:7272 u=user p=pass o=org1 s=serv a=root t=inc1234 r=check # get password")
@@ -1013,8 +1044,12 @@ func parseArgs(args []string) (cfg PMPConfig) {
 				cfg.Debug = true
 			case "verbose":
 				cfg.Verbose = true
+			case "help":
+				printHelp()
+				os.Exit(0)
 			default:
-				log.Fatalln("ERROR: wrong arg", a)
+				Err("wrong arg: " + a)
+				os.Exit(2)
 			}
 		} else {
 			k := s[0]
@@ -1059,7 +1094,8 @@ func parseArgs(args []string) (cfg PMPConfig) {
 				case "b", "browser":
 					cfg.Mode = PMPModeBrowser
 				default:
-					log.Fatalln("ERROR: Wrong mode:", v)
+					Err("Wrong mode:" + v)
+					os.Exit(1)
 				}
 			case "f":
 				Debug("filter:", v)
@@ -1071,7 +1107,8 @@ func parseArgs(args []string) (cfg PMPConfig) {
 				case "e", "exact":
 					cfg.Filter = PMPFilterExact
 				default:
-					log.Fatalln("ERROR: Wrong filter:", v)
+					Err("Wrong filter:" + v)
+					os.Exit(1)
 				}
 			case "cert":
 				Debug("certificate:", v)
@@ -1079,7 +1116,9 @@ func parseArgs(args []string) (cfg PMPConfig) {
 					cfg.IgnoreCert = true
 				}
 			default:
-				log.Fatalln("ERROR: Wrong option:", a)
+				Err("Wrong option:" + a)
+				printHelp()
+				os.Exit(1)
 			}
 		}
 	}
@@ -1106,6 +1145,10 @@ func getPasswords(cfg PMPConfig) {
 		log.Fatalln(err)
 	}
 	Debug("RESULTS")
+	if len(res) == 0 {
+		log.Fatalln("Nothing found.")
+	}
+	// TODO: colorize output?
 	for _, e := range res {
 		if cfg.SetEnv {
 			v := e.system + "_" + e.user
@@ -1121,9 +1164,12 @@ func getPasswords(cfg PMPConfig) {
 				fmt.Println(v + "='" + p + "'")
 				os.Stdout = os.Stderr
 			} else {
-				fmt.Println("Password is empty for " + e.user + " @ " + e.system)
+				Warn("Password is empty for " + e.user + " @ " + e.system)
 			}
 		} else {
+			if e.password == "" {
+				e.password = "???"
+			}
 			fmt.Println(e.user + " @ " + e.system + " / " + e.password)
 		}
 	}
