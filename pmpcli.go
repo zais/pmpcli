@@ -28,10 +28,10 @@ import (
 // -----------------------------------------------------------------------------
 
 // BUILD number
-const BUILD ="201612062026"
+const BUILD ="201703191038"
 
 // VERSION of this piece of ***
-const VERSION = "0.2.4." + BUILD
+const VERSION = "0.2.5." + BUILD
 
 // VERSIONAPI engine/plugin versions
 const VERSIONAPI = "engine: 8.6.0.8600 / plugin: 1.0.2.4"
@@ -771,6 +771,7 @@ func (pc *PMPClient) getPasswordByIDPlugin(passID string, reason string, addreas
 }
 
 func (pc *PMPClient) getPasswordPlugin(system, user, reason, addreason string, filter PMPFilter) (res []PMPEntry, err error) {
+	// TODO: use go rutines to speedup  things up
 	// search for systems
 	sys, err := pc.systemByNamePlugin(system, user)
 	if err != nil {
@@ -791,9 +792,9 @@ func (pc *PMPClient) getPasswordPlugin(system, user, reason, addreason string, f
 		}
 		for _, a := range accs {
 			// filter accounts
-			if (filter == PMPFilterContains && !strings.Contains(a.Name, user)) ||
-				(filter == PMPFilterStartsWith && strings.Index(a.Name, user) != 0) ||
-				(filter == PMPFilterExact && a.Name != user) {
+			if (filter == PMPFilterContains && !strings.Contains(strings.ToLower(a.Name), strings.ToLower(user))) ||
+				(filter == PMPFilterStartsWith && strings.Index(strings.ToLower(a.Name), strings.ToLower(user)) != 0) ||
+				(filter == PMPFilterExact && strings.ToLower(a.Name) != strings.ToLower(user)) {
 				continue
 			}
 			// get password
@@ -1013,8 +1014,8 @@ func printHelp() {
 	fmt.Println("        c|contains    : name contains")
 	fmt.Println("        e|exact       : name exactly mathces")
 	fmt.Println("  m   - mode 'plugin' or 'browser' (default is plugin)")
-	fmt.Println("        p|plugin : uses API, able to search")
-	fmt.Println("        b|browser: uses http calls, needs exact system/user names")
+	fmt.Println("        p|plugin : uses API,  slow, able to search")
+	fmt.Println("        b|browser: uses AJAX, fast, needs exact system/user names")
 	fmt.Println("  env - will print commands to setup bash env")
 	fmt.Println("        NOTICE: this mode is experimental")
 }
@@ -1148,7 +1149,6 @@ func getPasswords(cfg PMPConfig) {
 	if len(res) == 0 {
 		log.Fatalln("Nothing found.")
 	}
-	// TODO: colorize output?
 	for _, e := range res {
 		if cfg.SetEnv {
 			v := e.system + "_" + e.user
